@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  development:
+    build:
+      context: .
+      dockerfile: docker/development/Dockerfile
+    volumes:
+      - .:/app
+    environment:
+      - PYTHONPATH=/app
+    ports:
+      - "8888:8888"  # For Jupyter notebook
+    tty: true        # Keep container running
+    stdin_open: true # Keep container running
+    command: tail -f /dev/null  # Keep container running
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:14
+    environment:
+      - POSTGRES_USER=energy_user
+      - POSTGRES_PASSWORD=energy_password
+      - POSTGRES_DB=energy_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
