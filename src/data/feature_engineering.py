@@ -20,7 +20,8 @@ def add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     # Season (Australia)
     df['season'] = pd.cut(df['month'], 
                          bins=[0,2,5,8,11,12], 
-                         labels=['Summer', 'Autumn', 'Winter', 'Spring', 'Summer'])
+                         labels=['Summer', 'Autumn', 'Winter', 'Spring', 'Summer'],
+                         ordered=False)
     
     return df
 
@@ -113,6 +114,9 @@ def add_holiday_features(df: pd.DataFrame) -> pd.DataFrame:
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """Main function to engineer all features."""
     logger.info("Starting feature engineering")
+
+    max_lag = 168  # 1 week
+    df = df.iloc[max_lag:].copy()
     
     df = add_time_features(df)
     df = add_lag_features(df)
@@ -120,9 +124,6 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df = add_periodicity_features(df)
     df = add_demand_features(df)
     df = add_holiday_features(df)
-    
-    # Drop rows with NaN values from lagged features
-    df = df.dropna()
-    
+
     logger.info(f"Feature engineering completed. New shape: {df.shape}")
     return df
