@@ -1,110 +1,183 @@
 # data_split.py
 import pandas as pd
 import numpy as np
-from typing import Tuple, Optional
+from typing import Tuple, List, Optional
 import logging
+from datetime import datetime
+from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-def create_time_splits(
-    df: pd.DataFrame,
-    target_col: str = 'total_demand',
-    test_size: float = 0.2,
-    val_size: float = 0.1,
-    timestamp_col: str = 'settlement_date'
-) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """
-    Create train/val/test splits respecting temporal order.
+@dataclass
+class TimeWindow:
+    """Represents a time window for training or validation."""
+    start_date: pd.Timestamp
+    end_date: pd.Timestamp
     
-    Args:
-        df: DataFrame with features and target
-        target_col: Name of target column
-        test_size: Proportion of data for testing
-        val_size: Proportion of data for validation
-        timestamp_col: Name of timestamp column
-    
-    Returns:
-        Tuple of (train, val, test) DataFrames
-    """
-    logger.info("Creating time-based data splits")
-    
-    # Ensure data is sorted by time
-    df = df.sort_values(timestamp_col).copy()
-    
-    # Calculate split points
-    n_samples = len(df)
-    test_start = int(n_samples * (1 - test_size))
-    val_start = int(test_start * (1 - val_size))
-    
-    # Split data
-    train = df.iloc[:val_start]
-    val = df.iloc[val_start:test_start]
-    test = df.iloc[test_start:]
-    
-    # Log split sizes
-    logger.info(f"Train set: {len(train)} samples ({train[timestamp_col].min()} to {train[timestamp_col].max()})")
-    logger.info(f"Validation set: {len(val)} samples ({val[timestamp_col].min()} to {val[timestamp_col].max()})")
-    logger.info(f"Test set: {len(test)} samples ({test[timestamp_col].min()} to {test[timestamp_col].max()})")
-    
-    return train, val, test
+    def __str__(self):
+        return f"{self.start_date.strftime('%Y-%m-%d')} to {self.end_date.strftime('%Y-%m-%d')}"
 
-def create_sequences(
-    df: pd.DataFrame,
+@dataclass
+class WalkForwardSplit:
+    """Represents a single walk-forward split with training and validation periods."""
+    train_window: TimeWindow
+    val_window: TimeWindow
+    train_data: pd.DataFrame
+    val_data: pd.DataFrame
+    
+    def __str__(self):
+        return f"Train: {self.train_window}\nValidation: {self.val_window}\n" \
+               f"Train samples: {len(self.train_data)}, Validation samples: {len(self.val_data)}"
+
+class WalkForwardValidator:
+    """Handles the creation and management of walk-forward validation splits."""
+    
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        date_column: str = 'datetime',
+        initial_train_years: int = 3,
+        validation_window: str = '3M',
+        stride: str = '1M'
+    ):
+        """
+        Initialize the walk-forward validator.
+        
+        Args:
+            df: Input DataFrame
+            date_column: Name of the datetime column
+            initial_train_years: Number of years for initial training
+            validation_window: Size of validation window (pandas offset string)
+            stride: How far to move forward each time (pandas offset string)
+        """
+        if date_column not in df.columns:
+            raise ValueError(f"Date column '{date_column}' not found in DataFrame")
+        
+        self.df = df.copy()
+        self.df[date_column] = pd.to_datetime(self.df[date_column])
+        self.df = self.df.sort_values(date_column)
+        
+        self.date_column = date_column
+        self.initial_train_years = initial_train_years
+        self.validation_window = validation_window
+        self.stride = stride
+        
+        # Calculate key dates
+        self.start_date = self.df[date_column].min()
+        self.end_date = self.df[date_column].max()
+        self.initial_train_end = self.start_date + pd.DateOffset(years=initial_train_years)
+        
+        logger.info(f"Initialized WalkForwardValidator:")
+        logger.info(f"Data range: {self.start_date} to {self.end_date}")
+        logger.info(f"Initial training period ends: {self.initial_train_end}")
+    
+    def create_splits(self) -> List[WalkForwardSplit]:
+        """
+        Create all walk-forward splits based on the configured parameters.
+        
+        Returns:
+            List of WalkForwardSplit objects
+        """
+        splits = []
+        current_train_end = self.initial_train_end
+        
+        while current_train_end + pd.Timedelta(self.validation_window) <= self.end_date:
+            # Define windows
+            val_end = current_train_end + pd.Timedelta(self.validation_window)
+            
+            train_window = TimeWindow(self.start_date, current_train_end)
+            val_window = TimeWindow(current_train_end, val_end)
+            
+            # Create split
+            train_data = self.df[
+                (self.df[self.date_column] >= train_window.start_date) & 
+                (self.df[self.date_column] < train_window.end_date)
+            ]
+            val_data = self.df[
+                (self.df[self.date_column] >= val_window.start_date) & 
+                (self.df[self.date_column] < val_window.end_date)
+            ]
+            
+            splits.append(WalkForwardSplit(train_window, val_window, train_data, val_data))
+            
+            # Move forward
+            current_train_end += pd.Timedelta(self.stride)
+        
+        logger.info(f"Created {len(splits)} walk-forward splits")
+        return splits
+
+def create_sequences_for_split(
+    split: WalkForwardSplit,
     target_col: str = 'total_demand',
-    sequence_length: int = 48,  # 24 hours of 30-min intervals
-    horizon: int = 48,  # Predict next 24 hours
-    stride: int = 1
-) -> Tuple[np.ndarray, np.ndarray]:
+    sequence_length: int = 48,
+    horizon: int = 48,
+    feature_columns: Optional[List[str]] = None
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Create sequences for time series prediction.
+    Create sequences for a single walk-forward split.
     
     Args:
-        df: DataFrame with features and target
+        split: WalkForwardSplit object containing train and validation data
         target_col: Name of target column
         sequence_length: Number of time steps for input sequence
         horizon: Number of time steps to predict
-        stride: Step size between sequences
+        feature_columns: Optional list of feature columns to include
     
     Returns:
-        Tuple of (X, y) arrays where X is input sequences and y is target sequences
+        Tuple of (X_train, y_train, X_val, y_val) arrays
     """
-    data = df[target_col].values
-    X, y = [], []
+    def create_sequences_from_df(df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+        if feature_columns:
+            data = df[feature_columns + [target_col]].values
+            target_idx = len(feature_columns)
+        else:
+            data = df[[target_col]].values
+            target_idx = 0
+        
+        X, y = [], []
+        for i in range(0, len(data) - sequence_length - horizon + 1):
+            X.append(data[i:(i + sequence_length)])
+            y.append(data[(i + sequence_length):(i + sequence_length + horizon), target_idx])
+        
+        return np.array(X), np.array(y)
     
-    for i in range(0, len(data) - sequence_length - horizon + 1, stride):
-        X.append(data[i:(i + sequence_length)])
-        y.append(data[(i + sequence_length):(i + sequence_length + horizon)])
+    X_train, y_train = create_sequences_from_df(split.train_data)
+    X_val, y_val = create_sequences_from_df(split.val_data)
     
-    return np.array(X), np.array(y)
-
-def save_splits(
-    train: pd.DataFrame,
-    val: pd.DataFrame,
-    test: pd.DataFrame,
-    save_path: str = '../data/processed'
-) -> None:
-    """Save train/val/test splits to disk."""
-    import os
-    os.makedirs(save_path, exist_ok=True)
-    
-    train.to_csv(f"{save_path}/train.csv", index=False)
-    val.to_csv(f"{save_path}/val.csv", index=False)
-    test.to_csv(f"{save_path}/test.csv", index=False)
-    
-    logger.info(f"Splits saved to {save_path}")
+    return X_train, y_train, X_val, y_val
 
 if __name__ == "__main__":
     # Example usage
     from sqlalchemy import create_engine
-    from feature_engineering import engineer_features
     
-    # Load and prepare data
+    # Load data
     engine = create_engine("postgresql://energy_user:energy_password@energy-postgres-1:5432/energy_db")
     df = pd.read_sql("SELECT * FROM processed_energy", engine)
-    df = engineer_features(df)
+    
+    # Initialize validator
+    validator = WalkForwardValidator(
+        df,
+        date_column='datetime',
+        initial_train_years=3,
+        validation_window='3M',
+        stride='1M'
+    )
     
     # Create splits
-    train, val, test = create_time_splits(df)
+    splits = validator.create_splits()
     
-    # Optionally save splits
-    save_splits(train, val, test)
+    # Example: Create sequences for first split
+    feature_cols = ['hour', 'day_of_week', 'month', 'is_holiday']
+    X_train, y_train, X_val, y_val = create_sequences_for_split(
+        splits[0],
+        target_col='total_demand',
+        sequence_length=48,
+        horizon=48,
+        feature_columns=feature_cols
+    )
+    
+    # Log information about the first split
+    logger.info(f"First split information:")
+    logger.info(str(splits[0]))
+    logger.info(f"Training sequences shape: {X_train.shape}")
+    logger.info(f"Validation sequences shape: {X_val.shape}")

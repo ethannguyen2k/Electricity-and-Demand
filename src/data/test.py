@@ -8,7 +8,7 @@ import logging
 logging.basicConfig(level=logging.INFO)
 
 # Load data
-engine = create_engine("postgresql://your_user:your_password@container_name:5432/energy_db")
+engine = create_engine("postgresql://energy_user:energy_password@energy-postgres-1:5432/energy_db")
 df = pd.read_sql("SELECT * FROM processed_energy", engine)
 
 # Engineer features
