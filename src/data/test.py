@@ -1,30 +1,32 @@
-# test_split.py
-from data_split import create_time_splits
 import pandas as pd
-from sqlalchemy import create_engine
 from feature_engineering import engineer_features
 import logging
 
 logging.basicConfig(level=logging.INFO)
 
-# Load data
-engine = create_engine("postgresql://energy_user:energy_password@energy-postgres-1:5432/energy_db")
-df = pd.read_sql("SELECT * FROM processed_energy", engine)
+# Load data from PostgreSQL
+from sqlalchemy import create_engine
+db_url = "postgresql://energy_user:energy_password@energy-postgres-1:5432/energy_db"
+engine = create_engine(db_url)
 
-# Engineer features
+# Test individual functions
+df = pd.read_sql("SELECT * FROM processed_energy LIMIT 1000", engine)
+
+# Look at a few rows before engineering
+print("\nOriginal columns:", df.columns.tolist())
+print("\nSample data shape:", df.shape)
+
+# Apply feature engineering
 df_engineered = engineer_features(df)
 
-# Create splits
-train, val, test = create_time_splits(df_engineered)
-
 # Basic checks
-print("\nShapes:")
-print(f"Total: {len(df_engineered)}")
-print(f"Train: {len(train)} ({len(train)/len(df_engineered):.1%})")
-print(f"Val: {len(val)} ({len(val)/len(df_engineered):.1%})")
-print(f"Test: {len(test)} ({len(test)/len(df_engineered):.1%})")
+print("\nNew columns:", [col for col in df_engineered.columns if col not in df.columns])
+print("\nNew shape:", df_engineered.shape)
 
-print("\nDate ranges:")
-print(f"Train: {train['settlement_date'].min()} to {train['settlement_date'].max()}")
-print(f"Val: {val['settlement_date'].min()} to {val['settlement_date'].max()}")
-print(f"Test: {test['settlement_date'].min()} to {test['settlement_date'].max()}")
+# Check for NaN values
+print("\nNaN counts:")
+print(df_engineered.isna().sum())
+
+# Look at sample values for new features
+print("\nSample of new features:")
+print(df_engineered.sample(5))

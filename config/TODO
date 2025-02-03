@@ -1,0 +1,6 @@
+This should contain configuration files that control your pipeline behavior.
+
+model_config.yaml: Parameters for models
+feature_config.yaml: Feature engineering settings
+training_config.yaml: Training pipeline configuration
+logging_config.yaml: Logging settings
